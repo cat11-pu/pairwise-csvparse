@@ -86,7 +86,7 @@ class Record:
 
 def _strip_bom(text):
     """Return text without the mark that may sit in front of the first field."""
-    if text.startswith("\xef\xbb\xbf"):
+    if text.startswith(BOM):
         return text[1:]
     return text
 
@@ -108,7 +108,29 @@ def _scan(text, delimiter, quotechar):
     while index < size:
         char = text[index]
 
-        if char == "\n":
+        if state == _FIELD_QUOTED:
+            if char == quotechar:
+                if index + 1 < size and text[index + 1] == quotechar:
+                    buf.append(quotechar)
+                    index += 2
+                    continue
+                state = _FIELD_CLOSED
+                index += 1
+                continue
+            if char == "\r" or char == "\n":
+                if char == "\r" and index + 1 < size and text[index + 1] == "\n":
+                    buf.append("\r\n")
+                    index += 2
+                else:
+                    buf.append(char)
+                    index += 1
+                line += 1
+                continue
+            buf.append(char)
+            index += 1
+            continue
+
+        if char == "\r" or char == "\n":
             # A record ends here and the next one starts on the next line.
             row.append("".join(buf))
             records.append((row, row_line))
@@ -117,29 +139,10 @@ def _scan(text, delimiter, quotechar):
             line += 1
             row_line = line
             state = _FIELD_START
-            index += 1
-            continue
-
-        if state == _FIELD_QUOTED:
-            if char == quotechar:
-                if index + 1 < size and text[index + 1] == quotechar:
-                    buf.append(char)
-                    buf.append(char)
-                    index += 2
-                    continue
-                state = _FIELD_CLOSED
+            if char == "\r" and index + 1 < size and text[index + 1] == "\n":
+                index += 2
+            else:
                 index += 1
-                continue
-            if char == "\n" or char == "\r":
-                if char == "\r" and index + 1 < size and text[index + 1] == "\n":
-                    buf.append("\r\n")
-                    index += 2
-                else:
-                    buf.append(char)
-                    index += 1
-                continue
-            buf.append(char)
-            index += 1
             continue
 
         if char == delimiter:
@@ -162,6 +165,13 @@ def _scan(text, delimiter, quotechar):
         buf.append(char)
         state = _FIELD_PLAIN
         index += 1
+
+    if state == _FIELD_QUOTED:
+        raise CSVError(
+            "the record starting on line %d ends inside a quoted field"
+            % (row_line,),
+            row_line,
+        )
 
     # The last field of the document ends with the document itself.
     if row or buf or state != _FIELD_START:
@@ -187,7 +197,7 @@ def parse_records(text, delimiter=DELIMITER, quotechar=QUOTE, strict=True):
         return records
     width = len(records[0].fields)
     for record in records:
-        if len(record.fields) >= width:
+        if len(record.fields) == width:
             continue
         if strict:
             raise CSVError(
@@ -224,6 +234,8 @@ def needs_quotes(field, delimiter=DELIMITER, quotechar=QUOTE):
     for mark in (delimiter, quotechar):
         if mark in field:
             return True
+    if "\r" in field or "\n" in field:
+        return True
     return False
 
 
